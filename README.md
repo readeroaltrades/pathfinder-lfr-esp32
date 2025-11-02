@@ -263,3 +263,5 @@ Kp = 25, Ki = 0, Kd = 8
 -   [ ] ESP32 board ≤ 0.6 in high
 -   [ ] Kill switch reachable from top
 -   [ ] Wiring tidy and insulated
+
+# pathfinder-lfr-esp32
