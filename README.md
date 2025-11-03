@@ -1,267 +1,505 @@
-Autonomous line follower robot built using ESP32, N20 motors, L298N driver, and TCRT5000 sensors.
+# Pathfinder LFR
 
-# Overview
+An autonomous PID-controlled line follower robot built with ESP32, optimized for competitive racing with intelligent sensor fusion and adaptive control algorithms.
 
-## 🧩 Hardware
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Platform](https://img.shields.io/badge/platform-ESP32-green.svg)
+![Framework](https://img.shields.io/badge/framework-Arduino-00979D.svg)
 
--   ESP32 DevKit
--   N20 Gear Motors
--   L298N Motor Driver
--   5× TCRT5000 Sensor Array
--   3× 18650 Battery Pack (11.1V)
--   PVC Chassis 9.45×7.87 in
+---
 
-## 🧠 Features``
+## 📋 Table of Contents
 
--   PID-based line following
--   Calibration routine for sensors
--   Adjustable motor PWM control
--   Modular code structure for testing
+-   [Overview](#overview)
+-   [Hardware Components](#hardware-components)
+-   [Software Features](#software-features)
+-   [Pin Configuration](#pin-configuration)
+-   [Getting Started](#getting-started)
+-   [PID Tuning Guide](#pid-tuning-guide)
+-   [Chassis Specifications](#chassis-specifications)
+-   [Troubleshooting](#troubleshooting)
+-   [Performance Optimization](#performance-optimization)
+-   [Competition Compliance](#competition-compliance)
 
-## ⚙️ Folder Overview
+---
 
-| Folder        | Purpose                   |
-| ------------- | ------------------------- |
-| `code/`       | Firmware and test code    |
-| `circuits/`   | Circuit schematics        |
-| `mechanical/` | Chassis and CAD designs   |
-| `docs/`       | Documentation and rules   |
-| `data/`       | Calibration and log files |
+## 🎯 Overview
 
-# 🚗 Core Idea
+Pathfinder is a competition-ready line follower robot that uses **PID control** to autonomously navigate black lines on white surfaces. The robot features optimized motor control, intelligent sensor processing, and robust error handling for curves, gaps, and intersections.
 
-The Line Follower Robot (LFR) autonomously follows a black line on a white track using sensors and control algorithms. It must handle **curves, intersections, gaps, and checkpoints** without human input during operation.
+### Core Capabilities
 
-# ⚙️ Major Subsystems
+-   **Precise Line Tracking**: PID algorithm with integral windup protection
+-   **Adaptive Speed Control**: Dynamic motor speed adjustment (50-220 PWM)
+-   **Smart Sensor Logic**: 3-sensor array with 7 position states
+-   **Built-in Calibration**: Automated sensor threshold detection
+-   **Real-time Debugging**: Comprehensive serial monitoring at 100ms intervals
 
-## 1. Mechanical Subsystem (Chassis & Motors)
+---
 
--   Lightweight and balanced chassis (≤ 25×25×18 cm, ≤ 1.2 kg).
--   Two N20 gear motors with differential drive.
--   One free or caster wheel for balance.
--   Goal: stability, low friction, easy maintenance.
+## 🔧 Hardware Components
 
-## 2. Electrical Subsystem (Power & Circuitry)
+| Component           | Specification              | Quantity |
+| ------------------- | -------------------------- | -------- |
+| **Microcontroller** | ESP32 DevKit               | 1        |
+| **Motors**          | N20 1000RPM Gear Motors    | 2        |
+| **Motor Driver**    | L298N H-Bridge             | 1        |
+| **Line Sensors**    | TCRT5000 IR Sensors        | 3        |
+| **Power Supply**    | 3× 18650 Batteries (11.1V) | 1 pack   |
+| **Chassis**         | PVC Sheet (9.45"×7.87")    | 1        |
+| **Caster Wheel**    | Free-rotating rear support | 1        |
 
--   18650 battery pack with BMS and kill switch.
--   Voltage < 12V; regulated 3.3V for ESP32.
--   Motor driver (preferably TB6612FNG or DRV8833). Using L298N
--   Includes capacitors for noise suppression and safe wiring layout.
+### Power Requirements
 
-## 3. Sensing Subsystem (IR Line Sensor Array)
+-   **Motor Supply**: 11.1V (3S Li-ion)
+-   **Logic Supply**: 3.3V (regulated from battery)
+-   **Peak Current**: ~2A (both motors under load)
 
--   TCRT5000 IR sensors arranged as an array (usually 5).
--   Detect reflected light: black = high value, white = low value.
--   Calibrated to adapt to ambient light and surface conditions.
+---
 
-## 4. Control Subsystem (ESP32 Software)
+## ⚡ Software Features
 
--   Reads sensor values and computes line position error.
--   Uses [[PID Control]] to adjust motor speeds.
--   Implements recovery logic for gaps, checkpoints, and intersections.
--   Operates autonomously during runs.
+### 1. **PID Control System**
 
-# 🧠 How the Robot Completes a Run
-
-## 1. Calibration Phase
-
--   Measures black vs white reflectivity.
--   Determines sensor thresholds and normalization parameters.
--   Compensates for lighting and track surface.
-
-## 2. Start Phase
-
--   Robot starts from a 30×30 cm black zone.
--   After calibration, robot runs without human input.
-
-## 3. Control Loop
-
--   Reads sensor data every 10–20 ms.
--   Calculates line position error using weighted averages.
--   Applies PID algorithm to adjust motor PWMs:
-    -   left = base_speed - steering
-    -   right = base_speed + steering
--   Keeps the robot centered on the black line.
-
-## 4. Handling Obstacles
-
--   **Curves**: PID smoothly adjusts steering.
--   **Sharp turns**: higher D-term or lower speed prevents overshoot.
--   **Gaps (15 cm)**: robot coasts briefly, then reacquires line.
--   **Checkpoints**: recognized by wide black areas; progress logged.
-
-## 5. Finish & Scoring
-
--   Robot stops automatically at the endpoint or last checkpoint.
--   Points awarded based on checkpoints crossed and completion time.
-
-# ⚡ Control System Summary
-
-## Control Flow
-
-1. Read IR sensor values.
-2. Compute line error (weighted average method).
-3. Use PID to calculate steering correction.
-4. Apply motor PWMs for left/right wheels.
-5. Detect and handle checkpoints or line loss.
-
-## PID Overview
-
--   **P**: Corrects based on present error (fast response).
--   **I**: Corrects steady drift over time (removes bias).
--   **D**: Damps oscillations by reacting to rate of change.
-
-## Tuning Tips
-
-1. Start with I = 0, D = 0.
-2. Increase P until oscillation begins, then reduce slightly.
-3. Add D to smooth motion.
-4. Add small I if robot drifts off line.
-
-# ⚙️ Track Handling Logic
-
-## Line Loss (Gaps)
-
--   Continue briefly in the last known direction (100–250 ms).
--   If line not found, perform slow scanning turn.
--   Use encoders or timing for controlled recovery.
-
-## Checkpoints
-
--   Detected by wide black areas under multiple sensors.
--   Save progress to `last_checkpoint`.
--   On restart, resume from last checkpoint.
-
-# 🧩 Integration Notes
-
--   Keep sensor cables short; ensure common ground.
--   Add capacitors to stabilize voltage during motor spikes.
--   Disable Wi-Fi/Bluetooth before inspection.
--   Verify kill switch operation.
-
-# 🧪 Testing Plan
-
-1. **Unit Testing:** Sensors, motors, kill switch individually.
-2. **Integration Testing:** Basic line following and turning.
-3. **Feature Testing:** Gaps, intersections, and checkpoints.
-4. **Performance Testing:** Timed full runs and recovery tests.
-5. **Pre-Competition Check:** Verify all rules and dimensions.
-
-# 🧭 LFR PVC Chassis Dimensions (in Inches)
-
-## ⚙️ Competition Limits
-
--   **Max Width:** 9.84 in
--   **Max Length:** 9.84 in
--   **Max Height:** 7.09 in
-
-## 🧱 Recommended Base Plate
-
--   **Chassis plate (main base):** 9.45 × 7.87 × 0.14 in
--   **PVC thickness:** 0.12–0.16 in
-    > Keep total robot size under **9.45 × 7.87 × 7.09 in** for safety margin and compact handling.
-
-## 📐 Core Layout
-
-| Feature                                 | Measurement (inches) |
-| --------------------------------------- | -------------------- |
-| Wheel spacing (center-to-center)        | 5.51                 |
-| Wheelbase (front–rear axle)             | 3.94                 |
-| Caster offset (behind rear axle)        | 0.59–0.98            |
-| Sensor bar offset (ahead of front axle) | 0.39–0.71            |
-| Sensor-to-ground clearance              | 0.08–0.16            |
-| Battery area                            | 2.76 × 1.57          |
-| ESP32 area                              | 1.97 × 1.18          |
-
-## 🔩 Mounting Holes
-
-| Mount                       | Hole Spacing (inches) |
-| --------------------------- | --------------------- |
-| Motor bracket holes         | 0.87 apart            |
-| ESP32 standoffs rectangle   | 1.89 × 0.98           |
-| Sensor bar adjustment slots | ±0.20–0.39            |
-
-## 📏 Component Heights
-
-| Component                | Height (inches) |
-| ------------------------ | --------------- |
-| Battery pack             | ≤ 1.38          |
-| ESP32 board + connectors | ≤ 0.59          |
-| Sensor board clearance   | 0.08–0.16       |
-| Total robot height       | ≤ 7.09          |
-
-## 🛞 Motor & Wheel Specs
-
-| Parameter                      | Measurement (inches) |
-| ------------------------------ | -------------------- |
-| Wheel diameter                 | 1.18–1.57            |
-| Wheel offset from chassis edge | 0.24–0.31            |
-| Wheelbase (axle–axle)          | 3.94                 |
-
-## ⚖️ Center of Gravity Notes
-
--   Keep **battery and ESP32** centered along the width.
--   Place the battery **slightly forward (~0.4–0.8 in)** of the motor axis.
--   Aim for a **balanced or slightly front-heavy** weight distribution (≈45% front, 55% rear).
-
-### Template Coordinates (Inches)
-
-| Component             | X (left–right) | Y (front–rear)  |
-| --------------------- | -------------- | --------------- |
-| Left motor center     | 1.97 from left | 3.94 from rear  |
-| Right motor center    | 7.48 from left | 3.94 from rear  |
-| Sensor bar centerline | —              | 0.59 from front |
-| Battery center        | 4.72 from left | 2.36 from rear  |
-
-## 🧰 Construction Notes
-
--   Use **⅛-inch (3 mm)** PVC or **3/16-inch (4.5 mm)** if heavier.
--   **Deburr edges** and **round corners (⅛–¼ inch radius)** to protect the track.
--   Keep bolts **flush or recessed** to avoid scraping.
--   Add **cross-bracing** or 0.08–0.12 in PVC strips underneath if the plate flexes.
--   Use **foam tape or Velcro** for lightweight mounting of ESP32 and battery.
-
-## 🎯 How to Calibrate
-
-1. Upload the sketch.
-2. Open Serial Monitor (115200 baud).
-3. Move each sensor across the black line and white surface.
-    - Note readings.
-    - Set threshold between average black and white.
-4. Start with:
-
-```
-Kp = 25, Ki = 0, Kd = 8
+```cpp
+Kp = 25.0  // Proportional gain (primary correction)
+Ki = 0.0   // Integral gain (eliminates steady-state drift)
+Kd = 8.0   // Derivative gain (dampens oscillations)
 ```
 
-5. Tune gradually:
-    - If it oscillates → reduce Kp or increase Kd
-    - If it’s slow to correct → increase Kp
-    - If it drifts → increase Ki slightly (rarely needed)
+**Control Loop Frequency**: 100 Hz (10ms cycle time)
 
-## 🔌 Cable Management
+### 2. **Integral Windup Protection**
 
--   Route motor wires along side edges and secure with zip-ties.
--   Keep sensor wires short (< 3 in).
--   Use **heatshrink tubing** for all exposed solder joints.
--   Add a **removable connector** for battery input.
+Prevents integral term accumulation during line loss or sharp turns:
 
-## 🧨 Kill Switch
+```cpp
+integral = constrain(integral, -100.0, +100.0)
+```
 
--   Mount main **kill switch** on the top or side, clearly visible.
--   Use recessed mounting so it won’t snag.
--   Label auxiliary switches if used.
+### 3. **Hardware PWM via LEDC**
 
-## ✅ Final Checklist
+-   **Frequency**: 5 kHz (optimized for N20 motors with L298N)
+-   **Resolution**: 8-bit (0-255)
+-   **Channels**: Independent left/right motor control
 
--   [ ] Base plate: 9.45 × 7.87 in
--   [ ] Wheel spacing: 5.5 in center-to-center
--   [ ] Wheelbase: 3.9–4.0 in
--   [ ] Sensor bar: 0.6 in forward of front axle
--   [ ] Sensor clearance: 0.1 in from surface
--   [ ] Battery centered, ≤ 1.4 in high
--   [ ] ESP32 board ≤ 0.6 in high
--   [ ] Kill switch reachable from top
--   [ ] Wiring tidy and insulated
+### 4. **Intelligent Line Detection**
 
-# pathfinder-lfr-esp32
+| Sensor State (L-M-R) | Error     | Robot Action                   |
+| -------------------- | --------- | ------------------------------ |
+| `1-0-0`              | -2        | Hard left turn                 |
+| `1-1-0`              | -1        | Slight left correction         |
+| `0-1-0`              | 0         | Centered - go straight         |
+| `0-1-1`              | +1        | Slight right correction        |
+| `0-0-1`              | +2        | Hard right turn                |
+| `1-1-1`              | 0         | Wide line/intersection         |
+| `0-0-0`              | lastError | Line lost - maintain direction |
+
+### 5. **Automatic Calibration**
+
+```cpp
+calibrateSensors();  // Measures black/white values
+```
+
+-   Samples 50 readings per surface
+-   Calculates optimal threshold automatically
+-   Compensates for ambient lighting
+
+### 6. **Real-time Debug Output**
+
+```
+Sensors[L:2800 M:500 R:2900] | Err:0 | Corr:0.0 | Speed[L:180 R:180]
+```
+
+Shows sensor readings, position error, PID correction, and motor speeds.
+
+---
+
+## 📌 Pin Configuration
+
+### Sensor Pins (Analog)
+
+```cpp
+LEFT_SENSOR   = 34  // ADC1_CH6
+MID_SENSOR    = 35  // ADC1_CH7
+RIGHT_SENSOR  = 32  // ADC1_CH4
+```
+
+### Motor Control (L298N)
+
+```cpp
+// Left Motor
+ENA = 33  // PWM (LEDC Channel 0)
+IN1 = 25  // Direction A
+IN2 = 26  // Direction B
+
+// Right Motor
+ENB = 27  // PWM (LEDC Channel 1)
+IN3 = 14  // Direction A
+IN4 = 12  // Direction B
+```
+
+### Wiring Diagram
+
+```
+ESP32          L298N          Motors
+-----          ------         ------
+ 33  ────────→  ENA  ────────→ Left Motor +
+ 25  ────────→  IN1           Left Motor -
+ 26  ────────→  IN2
+ 27  ────────→  ENB  ────────→ Right Motor +
+ 14  ────────→  IN3           Right Motor -
+ 12  ────────→  IN4
+GND  ────────→  GND
+11.1V ───────→  12V/VCC
+```
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+-   [PlatformIO IDE](https://platformio.org/) or Arduino IDE with ESP32 support
+-   USB cable for programming
+-   Charged 3S Li-ion battery pack
+
+### Installation
+
+1. **Clone the repository**
+
+```bash
+git clone https://github.com/yourusername/pathfinder-lfr-esp32.git
+cd pathfinder-lfr-esp32
+```
+
+2. **Open in PlatformIO**
+
+```bash
+pio run
+```
+
+3. **Configure Upload Port** (in `platformio.ini`)
+
+```ini
+upload_port = COM5     # Windows
+# upload_port = /dev/ttyUSB0  # Linux
+```
+
+4. **Upload firmware**
+
+```bash
+pio run --target upload
+```
+
+### First-Time Calibration
+
+1. **Uncomment calibration function** in `main.cpp`:
+
+```cpp
+void setup() {
+  // ...
+  calibrateSensors();  // Enable this line
+  // ...
+}
+```
+
+2. **Upload and open Serial Monitor**
+
+```bash
+pio device monitor
+```
+
+3. **Follow calibration prompts**:
+
+    - Place sensors over WHITE surface → wait 3 seconds
+    - Place sensors over BLACK line → wait 3 seconds
+    - Note the recommended threshold value
+
+4. **Update threshold in code**:
+
+```cpp
+int threshold = 1600;  // Use recommended value from calibration
+```
+
+5. **Re-upload** with calibration disabled
+
+---
+
+## 🎛️ PID Tuning Guide
+
+### Step 1: Tune Kp (Proportional)
+
+Start with `Ki = 0` and `Kd = 0`
+
+1. Set `Kp = 10`
+2. Increase gradually until robot follows line with slight wobble
+3. Reduce Kp by 20% for stability
+
+**Symptoms:**
+
+-   Too low → Sluggish, misses turns
+-   Too high → Violent oscillations
+
+### Step 2: Tune Kd (Derivative)
+
+1. Keep Kp at optimal value
+2. Start `Kd = 5`
+3. Increase until wobble is minimized
+4. Stop if robot becomes too slow to respond
+
+**Symptoms:**
+
+-   Too low → Still oscillating
+-   Too high → Sluggish cornering
+
+### Step 3: Tune Ki (Integral) - Optional
+
+Only add if robot consistently drifts off-center on straight lines.
+
+1. Start with `Ki = 0.1`
+2. Increase slowly (max 0.5)
+3. Watch for integral windup issues
+
+**Current Recommended Values:**
+
+```cpp
+Kp = 25.0  // Aggressive correction
+Ki = 0.0   // Disabled (not needed for most tracks)
+Kd = 8.0   // Smooth damping
+```
+
+### Speed Adjustment
+
+```cpp
+baseSpeed = 180   // Cruising speed (start conservative)
+maxSpeed  = 220   // Upper limit (allows PID headroom)
+minSpeed  = 50    // Prevents motor stall
+```
+
+**Tuning Tips:**
+
+-   Start at `baseSpeed = 150` for testing
+-   Increase gradually until performance degrades
+-   Keep `maxSpeed = baseSpeed + 40` for safety margin
+
+---
+
+## 📐 Chassis Specifications
+
+### Competition Limits
+
+| Parameter | Maximum  | Actual     |
+| --------- | -------- | ---------- |
+| Width     | 9.84 in  | 9.45 in    |
+| Length    | 9.84 in  | 7.87 in    |
+| Height    | 7.09 in  | ≤ 7.09 in  |
+| Weight    | 2.65 lbs | ≤ 2.65 lbs |
+
+### Physical Layout
+
+| Feature                            | Measurement    |
+| ---------------------------------- | -------------- |
+| Wheel spacing (center-to-center)   | 5.51 in        |
+| Wheelbase (front–rear axle)        | 3.94 in        |
+| Caster offset (behind rear axle)   | 0.59–0.98 in   |
+| Sensor bar offset (ahead of front) | 0.39–0.71 in   |
+| Sensor ground clearance            | 0.08–0.16 in   |
+| Battery area                       | 2.76 × 1.57 in |
+| ESP32 mounting area                | 1.97 × 1.18 in |
+
+### Material
+
+-   **Base Plate**: ⅛" (3mm) PVC sheet
+-   **Thickness**: 0.12–0.16 in
+-   **Finish**: Deburred edges, rounded corners (⅛" radius)
+
+### Center of Gravity
+
+-   **Battery**: Centered laterally, 0.4–0.8 in forward of motor axis
+-   **ESP32**: Centered on chassis
+-   **Weight Distribution**: ~45% front, 55% rear
+
+---
+
+## 🔍 Troubleshooting
+
+### Robot Oscillates/Wobbles
+
+**Cause**: Kp too high or Kd too low  
+**Solution**:
+
+-   Decrease Kp by 20%
+-   Increase Kd by 2-3 points
+
+### Misses Sharp Turns
+
+**Cause**: Speed too high or correction insufficient  
+**Solution**:
+
+-   Reduce `baseSpeed` to 150-160
+-   Increase `maxSpeed` to 240
+-   Increase Kp for more aggressive steering
+
+### Motors Stall on Turns
+
+**Cause**: `minSpeed` too low, especially with weak batteries  
+**Solution**:
+
+-   Increase `minSpeed` to 80-100
+-   Check battery voltage (should be > 10.5V)
+
+### Sensors Not Detecting Line
+
+**Cause**: Incorrect threshold or sensor height  
+**Solution**:
+
+1. Run calibration routine
+2. Check sensor-to-ground clearance (0.08-0.16 in)
+3. Verify sensor readings in Serial Monitor
+4. Adjust threshold if needed
+
+### Inverted Sensor Logic
+
+Some TCRT5000 modules output HIGH on black line.  
+**Solution**: Change threshold comparison:
+
+```cpp
+bool leftOnLine = (leftVal > threshold);  // For inverted sensors
+```
+
+### Random Behavior / Noise
+
+**Cause**: Power supply noise or loose connections  
+**Solution**:
+
+-   Add 100µF capacitor across motor terminals
+-   Check all ground connections
+-   Secure sensor cables (< 3 in length)
+
+---
+
+## ⚡ Performance Optimization
+
+### Speed vs. Accuracy Trade-offs
+
+| Track Type    | Base Speed | Max Speed | Kp  | Kd  |
+| ------------- | ---------- | --------- | --- | --- |
+| Gentle curves | 200        | 240       | 20  | 6   |
+| Sharp turns   | 160        | 200       | 28  | 10  |
+| Mixed track   | 180        | 220       | 25  | 8   |
+
+### Advanced Techniques
+
+1. **Adaptive Speed Control** (TODO)
+
+    - Reduce speed proportional to error magnitude
+    - `speed = baseSpeed - (abs(error) * speedFactor)`
+
+2. **Look-ahead Sensor** (Requires 5-sensor array)
+
+    - Use outer sensors to predict upcoming turns
+    - Pre-emptively adjust speed
+
+3. **Encoder Integration** (TODO)
+    - Track wheel rotations for gap recovery
+    - Precise distance measurement for checkpoints
+
+---
+
+## 🏁 Competition Compliance
+
+### Pre-Competition Checklist
+
+-   [ ] **Dimensions verified**: ≤ 9.84" × 9.84" × 7.09"
+-   [ ] **Weight**: ≤ 2.65 lbs
+-   [ ] **Kill switch**: Accessible from top/side, clearly labeled
+-   [ ] **Loose parts**: All components secured (no loose wires)
+-   [ ] **Sharp edges**: All corners rounded, bolts flush/recessed
+-   [ ] **Battery**: Secure mounting, proper polarity
+-   [ ] **Calibration**: Fresh calibration on competition track
+-   [ ] **Test runs**: 3+ successful completions on practice track
+-   [ ] **Backup code**: Previous stable version saved
+
+### Track Specifications (Typical)
+
+-   **Line Width**: 0.75–1 in
+-   **Line Color**: Black on white
+-   **Gaps**: Up to 15 cm
+-   **Checkpoints**: Wide black zones (detect with all sensors)
+-   **Starting Zone**: 30×30 cm black square
+
+### Autonomous Operation Rules
+
+-   No remote control during runs
+-   Robot must self-start after calibration
+-   3-minute time limit per run
+-   Scoring: Checkpoints × Speed bonus
+
+---
+
+## 📁 Project Structure
+
+```
+pathfinder-lfr-esp32/
+├── src/
+│   └── main.cpp              # Main firmware
+├── include/
+│   └── README                # Library headers (if needed)
+├── platformio.ini            # PlatformIO configuration
+├── README.md                 # This file
+└── LICENSE
+```
+
+---
+
+## 🛠️ Development Roadmap
+
+-   [x] PID control implementation
+-   [x] Integral windup protection
+-   [x] Hardware PWM via LEDC
+-   [x] Automatic calibration routine
+-   [x] Real-time debug monitoring
+-   [ ] BMS integration for battery protection
+-   [ ] Hardware kill switch implementation
+-   [ ] 5-sensor array support
+-   [ ] Adaptive speed control
+-   [ ] Checkpoint detection logic
+-   [ ] Gap recovery with timing
+-   [ ] EEPROM PID storage
+-   [ ] Web-based tuning interface
+
+---
+
+## 📝 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+---
+
+## 📧 Contact
+
+Project Link: [https://github.com/yourusername/pathfinder-lfr-esp32](https://github.com/yourusername/pathfinder-lfr-esp32)
+
+---
+
+## 🙏 Acknowledgments
+
+-   ESP32 Arduino Core by Espressif
+-   PlatformIO for seamless development experience
+-   TCRT5000 sensor reference designs
+-   PID control theory resources
+
+---
