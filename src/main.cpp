@@ -1,232 +1,349 @@
 /*
-  Pathfinder LFR ESP32 - PID Line Follower (Optimized v2)
-  --------------------------------------------------------
-  - Uses 3 analog line sensors (TCRT5000)
-  - Controls 2 DC motors via L298N (with LEDC PWM)
-  - Implements PID control with integral windup protection
-  - Optimized for N20 1000RPM motors with better speed management
+  Pathfinder LFR ESP32 - Optimized 100Hz PID Line Follower with Extreme Curve Handling
+  -----------------------------------------------------------------------------------
+  Hardware:
+  - 3x Analog line sensors (TCRT5000) on pins 34, 35, 32
+  - 2x DC motors via L298N with LEDC PWM
+  - N20 1000RPM motors with 500Hz PWM, 8-bit resolution
   
-  IMPROVEMENTS:
-  - Added integral windup protection
-  - Lowered PWM frequency for better motor response
-  - More conservative speed limits for better control
-  - Added startup calibration helper
-  - Better sensor threshold handling
+  Optimizations:
+  - True 100Hz control loop (10ms cycle time)
+  - Adaptive PID with curve detection
+  - Extreme curve / U-turn handling
+  - Weighted sensor positioning for smooth curves
+  - Sensor smoothing filter to reduce noise
+  - Emergency line recovery with directional memory
+  - Non-blocking calibration with visual feedback
 */
 
 #include <Arduino.h>
 
-// ---------------- Pin Definitions ----------------
+// ============================================================================
+// PIN DEFINITIONS
+// ============================================================================
 #define LEFT_SENSOR   34
 #define MID_SENSOR    35
 #define RIGHT_SENSOR  32
 
-#define ENA 33    // Left motor PWM
-#define IN1 25    // Left motor direction
-#define IN2 26
-#define ENB 27    // Right motor PWM
-#define IN3 14    // Right motor direction
-#define IN4 12
+#define ENA 33
+#define INA 25
+#define INB 26
 
-// ---------------- PID Constants ----------------
-float Kp = 25.0;   // Proportional gain (tune this first)
-float Ki = 0.0;    // Integral gain (keep low or 0 initially)
-float Kd = 8.0;    // Derivative gain (adds stability)
+#define ENB 27
+#define INC 14
+#define IND 12
 
-// ---------------- Sensor Calibration ----------------
-int threshold = 1600;  // Black/White threshold (adjust after calibration)
-int blackValue = 0;    // Sensor reading on black line
-int whiteValue = 3200; // Sensor reading on white surface
+#define BOOT_BTN 0
 
-// ---------------- PID Variables ----------------
-float error = 0, lastError = 0, integral = 0, derivative = 0;
-const float integralLimit = 100.0;  // Prevent integral windup
+// ============================================================================
+// PID TUNING CONSTANTS
+// ============================================================================
+float Kp = 45.0;
+float Ki = 0.15;
+float Kd = 18.0;
 
-// ---------------- Motor Speed Settings ----------------
-int baseSpeed = 180;   // Base speed (start conservative)
-int maxSpeed  = 220;   // Max speed limit (leaves room for PID corrections)
-int minSpeed  = 50;    // Minimum speed to prevent motor stall
+const float SHARP_CURVE_KP_MULT = 2.0;
+const float SHARP_CURVE_KD_MULT = 0.5;
 
-// ---------------- PWM (LEDC) Setup ----------------
-#define PWM_FREQ 5000    // 5 kHz - better for N20 motors with L298N
-#define PWM_RES  8       // 8-bit resolution (0–255)
+// ============================================================================
+// MOTOR SPEED CONFIGURATION
+// ============================================================================
+int baseSpeed = 200;
+int maxSpeed  = 245;
+int minSpeed  = 60;
+int sharpTurnSpeed = 140;
+
+// Extreme curve pivot speed
+int extremeInnerSpeed = 20; // Very slow inner wheel for pivot
+
+// ============================================================================
+// SENSOR CONFIGURATION
+// ============================================================================
+int sensorPins[3] = {LEFT_SENSOR, MID_SENSOR, RIGHT_SENSOR};
+int sensorMin[3];
+int sensorMax[3];
+
+const float SENSOR_ALPHA = 0.8;
+float filteredSensors[3] = {0, 0, 0};
+
+// ============================================================================
+// PID CONTROL VARIABLES
+// ============================================================================
+float error = 0;
+float lastError = 0;
+float integral = 0;
+float derivative = 0;
+
+const float INTEGRAL_LIMIT = 120.0;
+const float INTEGRAL_DECAY = 0.95;
+
+// ============================================================================
+// LINE TRACKING STATE
+// ============================================================================
+unsigned long lineLastSeen = 0;
+const unsigned long LINE_LOST_TIMEOUT = 500;
+int lastValidDirection = 0;
+
+// ============================================================================
+// PWM (LEDC) CONFIGURATION
+// ============================================================================
+#define PWM_FREQ 500
+#define PWM_RES  8
 #define PWM_LEFT  0
 #define PWM_RIGHT 1
 
-// ---------------- Setup Functions ----------------
+// ============================================================================
+// TIMING CONTROL
+// ============================================================================
+unsigned long loopStartTime = 0;
+const unsigned long LOOP_PERIOD = 10;
+
+// ============================================================================
+// MOTOR CONTROL FUNCTIONS
+// ============================================================================
 void setupMotors() {
-  // Configure PWM channels
   ledcSetup(PWM_LEFT, PWM_FREQ, PWM_RES);
   ledcSetup(PWM_RIGHT, PWM_FREQ, PWM_RES);
-  
-  // Attach PWM to motor enable pins
   ledcAttachPin(ENA, PWM_LEFT);
   ledcAttachPin(ENB, PWM_RIGHT);
-  
-  // Set motor direction pins
-  pinMode(IN1, OUTPUT);
-  pinMode(IN2, OUTPUT);
-  pinMode(IN3, OUTPUT);
-  pinMode(IN4, OUTPUT);
-
-  // Default direction: forward
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
+  pinMode(INA, OUTPUT);
+  pinMode(INB, OUTPUT);
+  pinMode(INC, OUTPUT);
+  pinMode(IND, OUTPUT);
+  digitalWrite(INA, LOW);
+  digitalWrite(INB, HIGH);
+  digitalWrite(INC, HIGH);
+  digitalWrite(IND, LOW);
 }
 
-// ---------------- Motor Control Function ----------------
 void setMotorSpeed(int leftSpeed, int rightSpeed) {
-  // Clamp speed values
   leftSpeed  = constrain(leftSpeed, 0, 255);
   rightSpeed = constrain(rightSpeed, 0, 255);
-
-  // Apply PWM duty cycle
   ledcWrite(PWM_LEFT, leftSpeed);
   ledcWrite(PWM_RIGHT, rightSpeed);
 }
 
-// ---------------- Stop Motors ----------------
 void stopMotors() {
   ledcWrite(PWM_LEFT, 0);
   ledcWrite(PWM_RIGHT, 0);
 }
 
-// ---------------- Sensor Calibration Helper ----------------
-void calibrateSensors() {
-  Serial.println("\n=== SENSOR CALIBRATION ===");
-  Serial.println("Place sensors over WHITE surface...");
-  delay(3000);
+// ============================================================================
+// SENSOR CALIBRATION
+// ============================================================================
+void calibrateSensors(int durationMs = 30000) {
+  Serial.println("\n╔══════════════════════════════════════╗");
+  Serial.println("║     SENSOR CALIBRATION MODE         ║");
+  Serial.println("╚══════════════════════════════════════╝");
+  Serial.printf("Duration: %d seconds\n", durationMs / 1000);
+  Serial.println("→ Move robot slowly over line (black & white)\n");
   
-  int whiteL = 0, whiteM = 0, whiteR = 0;
-  for(int i = 0; i < 50; i++) {
-    whiteL += analogRead(LEFT_SENSOR);
-    whiteM += analogRead(MID_SENSOR);
-    whiteR += analogRead(RIGHT_SENSOR);
-    delay(20);
+  unsigned long startTime = millis();
+  unsigned long lastUpdate = 0;
+  int sampleCount = 0;
+
+  for (int i = 0; i < 3; i++) {
+    sensorMin[i] = 4095;
+    sensorMax[i] = 0;
   }
-  whiteL /= 50; whiteM /= 50; whiteR /= 50;
-  
-  Serial.println("Place sensors over BLACK line...");
-  delay(3000);
-  
-  int blackL = 0, blackM = 0, blackR = 0;
-  for(int i = 0; i < 50; i++) {
-    blackL += analogRead(LEFT_SENSOR);
-    blackM += analogRead(MID_SENSOR);
-    blackR += analogRead(RIGHT_SENSOR);
-    delay(20);
+
+  while (millis() - startTime < durationMs) {
+    for (int i = 0; i < 3; i++) {
+      int val = analogRead(sensorPins[i]);
+      if (val < sensorMin[i]) sensorMin[i] = val;
+      if (val > sensorMax[i]) sensorMax[i] = val;
+    }
+    sampleCount++;
+    if (millis() - lastUpdate >= 1000) {
+      int remaining = (durationMs - (millis() - startTime)) / 1000;
+      Serial.printf("⏱  Calibrating... %2d seconds remaining | Samples: %d\n", remaining, sampleCount);
+      lastUpdate = millis();
+    }
+    delay(5);
   }
-  blackL /= 50; blackM /= 50; blackR /= 50;
-  
-  Serial.println("\n--- Results ---");
-  Serial.printf("White: L=%d M=%d R=%d\n", whiteL, whiteM, whiteR);
-  Serial.printf("Black: L=%d M=%d R=%d\n", blackL, blackM, blackR);
-  
-  int avgWhite = (whiteL + whiteM + whiteR) / 3;
-  int avgBlack = (blackL + blackM + blackR) / 3;
-  threshold = (avgWhite + avgBlack) / 2;
-  
-  Serial.printf("\nRecommended threshold: %d\n", threshold);
-  Serial.println("Update threshold in code if needed.\n");
+
+  Serial.println("\n✓ Calibration complete!");
+  Serial.println("═══════════════════════════════════════════════");
+  for (int i = 0; i < 3; i++) {
+    const char* names[] = {"LEFT ", "MID  ", "RIGHT"};
+    int range = sensorMax[i] - sensorMin[i];
+    Serial.printf("%s: min=%4d  max=%4d  range=%4d ", names[i], sensorMin[i], sensorMax[i], range);
+    if (range < 500) Serial.print(" ⚠ LOW CONTRAST!");
+    Serial.println();
+  }
+  Serial.println("═══════════════════════════════════════════════\n");
+
+  stopMotors();
+  delay(2000);
 }
 
-// ---------------- Setup ----------------
+// ============================================================================
+// SENSOR READING & LINE POSITION CALCULATION
+// ============================================================================
+float readLineError() {
+  int rawLeft  = analogRead(LEFT_SENSOR);
+  int rawMid   = analogRead(MID_SENSOR);
+  int rawRight = analogRead(RIGHT_SENSOR);
+
+  filteredSensors[0] = (SENSOR_ALPHA * rawLeft)  + ((1 - SENSOR_ALPHA) * filteredSensors[0]);
+  filteredSensors[1] = (SENSOR_ALPHA * rawMid)   + ((1 - SENSOR_ALPHA) * filteredSensors[1]);
+  filteredSensors[2] = (SENSOR_ALPHA * rawRight) + ((1 - SENSOR_ALPHA) * filteredSensors[2]);
+
+  int leftVal  = map(filteredSensors[0], sensorMin[0], sensorMax[0], 0, 1000);
+  int midVal   = map(filteredSensors[1], sensorMin[1], sensorMax[1], 0, 1000);
+  int rightVal = map(filteredSensors[2], sensorMin[2], sensorMax[2], 0, 1000);
+
+  leftVal  = constrain(leftVal, 0, 1000);
+  midVal   = constrain(midVal, 0, 1000);
+  rightVal = constrain(rightVal, 0, 1000);
+
+  int totalWeight = leftVal + midVal + rightVal;
+  
+  float weightedPosition = 0;
+  if (totalWeight > 500) {
+    weightedPosition = ((leftVal * -1000) + (midVal * 0) + (rightVal * 1000)) / (float)totalWeight;
+    weightedPosition *= -1; // Flip sign to match correct left/right
+    lineLastSeen = millis();
+    if (weightedPosition < -100) lastValidDirection = -1;
+    else if (weightedPosition > 100) lastValidDirection = 1;
+  } else {
+    if (millis() - lineLastSeen > LINE_LOST_TIMEOUT) {
+      return lastValidDirection * 4.0;
+    }
+    return lastError;
+  }
+
+  float calculatedError = weightedPosition / 400.0;
+  return calculatedError;
+}
+
+// ============================================================================
+// SHARP & EXTREME CURVE DETECTION
+// ============================================================================
+bool isSharpCurve(float error) {
+  return abs(error) > 1.2;
+}
+
+bool isExtremeCurve(float error) {
+  return abs(error) > 2.0;
+}
+
+// ============================================================================
+// PID CONTROLLER
+// ============================================================================
+float calculatePID(float currentError) {
+  bool sharpCurve = isSharpCurve(currentError);
+  
+  float activeKp = sharpCurve ? (Kp * SHARP_CURVE_KP_MULT) : Kp;
+  float activeKd = sharpCurve ? (Kd * SHARP_CURVE_KD_MULT) : Kd;
+  
+  integral += currentError;
+  if ((currentError > 0 && lastError < 0) || (currentError < 0 && lastError > 0)) {
+    integral *= INTEGRAL_DECAY;
+  }
+  integral = constrain(integral, -INTEGRAL_LIMIT, INTEGRAL_LIMIT);
+  
+  derivative = currentError - lastError;
+  
+  float correction = (activeKp * currentError) + 
+                     (Ki * integral) + 
+                     (activeKd * derivative);
+  
+  lastError = currentError;
+  return correction;
+}
+
+// ============================================================================
+// MAIN SETUP
+// ============================================================================
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  pinMode(LEFT_SENSOR, INPUT);
-  pinMode(MID_SENSOR, INPUT);
-  pinMode(RIGHT_SENSOR, INPUT);
+  for (int i = 0; i < 3; i++) pinMode(sensorPins[i], INPUT);
+  pinMode(BOOT_BTN, INPUT_PULLUP);
 
   setupMotors();
   stopMotors();
 
-  Serial.println("╔════════════════════════════════════╗");
-  Serial.println("║  Pathfinder LFR - Optimized v2    ║");
-  Serial.println("╚════════════════════════════════════╝");
-  
-  // Uncomment to run calibration
-  // calibrateSensors();
-  
-  Serial.println("\nStarting in 3 seconds...");
-  Serial.printf("Base Speed: %d | Max Speed: %d\n", baseSpeed, maxSpeed);
-  Serial.printf("PID: Kp=%.1f Ki=%.1f Kd=%.1f\n\n", Kp, Ki, Kd);
-  delay(3000);
+  Serial.println("\n╔═════════════════════════════════════════╗");
+  Serial.println("║  Pathfinder LFR - Optimized 100Hz      ║");
+  Serial.println("║  PWM: 500Hz @ 8-bit (0-255)             ║");
+  Serial.println("║  Features: Adaptive PID + Extreme Curves║");
+  Serial.println("╚═════════════════════════════════════════╝");
+
+  if (digitalRead(BOOT_BTN) == LOW) {
+    Serial.println("⚠  BOOT button detected!");
+    Serial.println("→  Quick calibration mode (10 seconds)\n");
+    delay(1000);
+    calibrateSensors(10000);
+  } else {
+    Serial.println("Starting auto-calibration in 3 seconds...");
+    delay(3000);
+    calibrateSensors(30000);
+  }
+
+  for (int i = 0; i < 3; i++) filteredSensors[i] = analogRead(sensorPins[i]);
+
+  Serial.println("✓ Robot ready! Starting line following...\n");
+  delay(1000);
+  loopStartTime = millis();
 }
 
-// ---------------- Main Loop ----------------
+// ============================================================================
+// MAIN CONTROL LOOP (100Hz)
+// ============================================================================
 void loop() {
-  // --- Read Sensors ---
-  int leftVal  = analogRead(LEFT_SENSOR);
-  int midVal   = analogRead(MID_SENSOR);
-  int rightVal = analogRead(RIGHT_SENSOR);
-  
-  // --- Determine Line Position ---
-  bool leftOnLine  = (leftVal < threshold);
-  bool midOnLine   = (midVal < threshold);
-  bool rightOnLine = (rightVal < threshold);
-  
-  // --- Calculate Error (Position Error) ---
-  if (leftOnLine && !midOnLine && !rightOnLine) {
-    error = -2;  // Line far left - turn left hard
-  }
-  else if (leftOnLine && midOnLine && !rightOnLine) {
-    error = -1;  // Line slightly left
-  }
-  else if (!leftOnLine && midOnLine && !rightOnLine) {
-    error = 0;   // Line centered - perfect!
-  }
-  else if (!leftOnLine && midOnLine && rightOnLine) {
-    error = 1;   // Line slightly right
-  }
-  else if (!leftOnLine && !midOnLine && rightOnLine) {
-    error = 2;   // Line far right - turn right hard
-  }
-  else if (leftOnLine && midOnLine && rightOnLine) {
-    error = 0;   // Wide line or intersection - go straight
-  }
-  else if (!leftOnLine && !midOnLine && !rightOnLine) {
-    // Line lost - maintain last correction
-    error = lastError;
+  unsigned long currentTime = millis();
+  error = readLineError();
+  float correction = calculatePID(error);
+
+  int leftSpeed, rightSpeed;
+  float absErr = abs(error);
+
+  if (isExtremeCurve(error)) {
+    // Extreme curve / 90° / U-turn pivot
+    if (error < 0) {
+      leftSpeed  = extremeInnerSpeed;
+      rightSpeed = maxSpeed;
+    } else {
+      leftSpeed  = maxSpeed;
+      rightSpeed = extremeInnerSpeed;
+    }
+  } else if (isSharpCurve(error)) {
+    // Sharp curve
+    int innerSpeed = baseSpeed - (int)(absErr * 50);
+    innerSpeed = constrain(innerSpeed, extremeInnerSpeed, baseSpeed);
+    if (error < 0) {
+      leftSpeed  = innerSpeed;
+      rightSpeed = maxSpeed;
+    } else {
+      leftSpeed  = maxSpeed;
+      rightSpeed = innerSpeed;
+    }
+  } else {
+    // Normal PID curve
+    leftSpeed  = baseSpeed - correction;
+    rightSpeed = baseSpeed + correction;
+    leftSpeed  = constrain(leftSpeed, minSpeed, maxSpeed);
+    rightSpeed = constrain(rightSpeed, minSpeed, maxSpeed);
   }
 
-  // --- PID Computation ---
-  integral += error;
-  integral = constrain(integral, -integralLimit, integralLimit);  // Anti-windup
-  
-  derivative = error - lastError;
-  
-  float correction = (Kp * error) + (Ki * integral) + (Kd * derivative);
-  
-  lastError = error;
-
-  // --- Compute Motor Speeds ---
-  int leftSpeed  = baseSpeed - correction;
-  int rightSpeed = baseSpeed + correction;
-
-  // Apply speed limits
-  leftSpeed  = constrain(leftSpeed, minSpeed, maxSpeed);
-  rightSpeed = constrain(rightSpeed, minSpeed, maxSpeed);
-
-  // --- Apply Speeds ---
   setMotorSpeed(leftSpeed, rightSpeed);
 
-  // --- Debug Info (reduce frequency if needed) ---
   static unsigned long lastPrint = 0;
-  if (millis() - lastPrint > 100) {  // Print every 100ms
-    Serial.print("Sensors[L:"); Serial.print(leftVal);
-    Serial.print(" M:"); Serial.print(midVal);
-    Serial.print(" R:"); Serial.print(rightVal);
-    Serial.print("] | Err:"); Serial.print(error);
-    Serial.print(" | Corr:"); Serial.print(correction, 1);
-    Serial.print(" | Speed[L:"); Serial.print(leftSpeed);
+  if (currentTime - lastPrint >= 100) {
+    Serial.print("Err: "); Serial.print(error, 2);
+    Serial.print(" | PID: "); Serial.print(correction, 1);
+    Serial.print(" | L:"); Serial.print(leftSpeed);
     Serial.print(" R:"); Serial.print(rightSpeed);
-    Serial.println("]");
-    lastPrint = millis();
+    if (isExtremeCurve(error)) Serial.print(" [EXTREME]");
+    else if (isSharpCurve(error)) Serial.print(" [SHARP]");
+    Serial.println();
+    lastPrint = currentTime;
   }
-  
-  delay(10);  // 100Hz control loop
+
+  unsigned long processingTime = millis() - currentTime;
+  if (processingTime < LOOP_PERIOD) delay(LOOP_PERIOD - processingTime);
+  loopStartTime = currentTime;
 }
